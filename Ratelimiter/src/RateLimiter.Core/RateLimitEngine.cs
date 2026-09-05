@@ -1,4 +1,5 @@
 using RateLimiter.Core.Algorithms;
+using RateLimiter.Core.Resilience;
 using RateLimiter.Core.Rules;
 using RateLimiter.Core.Storage;
 using RateLimiter.Core.Time;
@@ -82,61 +83,129 @@ public sealed class RateLimitEngine
             // Nothing to enforce. Reported explicitly rather than silently allowed, so that a
             // rule set that matches nothing is visible in the output instead of looking like a
             // limiter that is working.
-            return new RateLimitDecision
+            return Record(new RateLimitDecision
             {
                 IsAllowed = true,
                 RuleName = UnmatchedRuleName,
                 Algorithm = default,
                 LimiterKey = string.Empty,
                 RemainingPermits = long.MaxValue,
-            };
+            });
         }
 
         string key = LimiterKey.Build(rule, context);
         IRateLimitAlgorithm algorithm = _algorithms.Resolve(rule.Policy.Algorithm);
 
-        for (int attempt = 0; attempt < _options.MaxWriteAttempts; attempt++)
+        // Ask the breaker before touching the store. When it is open the store is not called at
+        // all, so a request during an outage costs nothing rather than paying a timeout — which
+        // at any real volume is the difference between a degraded limiter and a broken service.
+        CircuitBreaker? breaker = _options.CircuitBreaker;
+
+        if (breaker is not null && !breaker.TryEnter())
         {
-            StoreEntry? entry = await _store.ReadAsync(key, cancellationToken).ConfigureAwait(false);
-
-            LimiterState state = entry?.State ?? LimiterState.Empty;
-            long version = entry?.Version ?? 0;
-
-            AlgorithmOutcome outcome = algorithm.Evaluate(state, rule.Policy, _clock.UtcNow, permits);
-
-            if (!outcome.RequiresPersist)
-            {
-                // Nothing to write, so nothing to race over. This is the rejection path for
-                // every algorithm, which is what keeps a limiter cheap while under attack.
-                return Decide(rule, key, outcome, storeFailure: false);
-            }
-
-            bool written = await _store
-                .TryWriteAsync(key, version, outcome.NextState, outcome.TimeToLive, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (written)
-            {
-                return Decide(rule, key, outcome, storeFailure: false);
-            }
-
-            // Lost the race. The algorithm is a pure function, so there is nothing to undo:
-            // re-read and recompute against whatever the winner wrote.
+            Metrics.RecordShortCircuit();
+            return FailureDecision(rule, key);
         }
 
-        // Every attempt lost. The engine cannot say what this caller has consumed, which is the
-        // same position an unreachable store would leave it in, so it is reported as a store
-        // failure. Slice 8 makes the response to that configurable; until then the engine
-        // favours availability, which is the right default for a gateway but must be visible.
-        return new RateLimitDecision
+        try
         {
-            IsAllowed = true,
+            for (int attempt = 0; attempt < _options.MaxWriteAttempts; attempt++)
+            {
+                StoreEntry? entry = await _store.ReadAsync(key, cancellationToken).ConfigureAwait(false);
+
+                LimiterState state = entry?.State ?? LimiterState.Empty;
+                long version = entry?.Version ?? 0;
+
+                AlgorithmOutcome outcome = algorithm.Evaluate(state, rule.Policy, _clock.UtcNow, permits);
+
+                if (!outcome.RequiresPersist)
+                {
+                    // Nothing to write, so nothing to race over. This is the rejection path for
+                    // every algorithm, which is what keeps a limiter cheap while under attack.
+                    breaker?.RecordSuccess();
+                    return Record(Decide(rule, key, outcome, storeFailure: false));
+                }
+
+                bool written = await _store
+                    .TryWriteAsync(key, version, outcome.NextState, outcome.TimeToLive, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (written)
+                {
+                    breaker?.RecordSuccess();
+                    return Record(Decide(rule, key, outcome, storeFailure: false));
+                }
+
+                // Lost the race. The algorithm is a pure function, so there is nothing to undo:
+                // re-read and recompute against whatever the winner wrote.
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The caller gave up, not the store. Cancellation is not evidence of ill health and
+            // must not count toward tripping the breaker.
+            throw;
+        }
+        catch (Exception ex) when (ex is not (ArgumentException or KeyNotFoundException))
+        {
+            // The store is unreachable or misbehaving. Programming errors — an unregistered
+            // algorithm, a bad argument — are deliberately excluded: those are bugs, and
+            // silently failing open on a bug would hide it behind a limiter that appears to work.
+            breaker?.RecordFailure();
+            return FailureDecision(rule, key);
+        }
+
+        // Every write attempt lost its race. The engine cannot say what this caller has
+        // consumed, which is the same position an unreachable store leaves it in, so it is
+        // routed through the same policy. It is counted separately because the remedy is
+        // different: contention calls for server-side evaluation, not for fixing a store.
+        Metrics.RecordWriteContentionExhausted();
+
+        // Contention is evidence the store is alive and busy, not that it is failing, so this
+        // deliberately does not count toward the breaker.
+        breaker?.RecordSuccess();
+
+        return FailureDecision(rule, key);
+    }
+
+    /// <summary>
+    /// Counters describing what this engine has done.
+    /// </summary>
+    public RateLimiterMetrics Metrics { get; } = new();
+
+    private RateLimitDecision FailureDecision(RateLimitRule rule, string key)
+    {
+        Metrics.RecordStoreFailure();
+
+        bool allowed = _options.OnStoreFailure == StoreFailurePolicy.FailOpen;
+
+        return Record(new RateLimitDecision
+        {
+            IsAllowed = allowed,
             RuleName = rule.Name,
             Algorithm = rule.Policy.Algorithm,
             LimiterKey = key,
             RemainingPermits = 0,
+
+            // Not a computed value: the caller has not been told to wait for a permit, but for
+            // the limiter to recover.
+            RetryAfter = allowed ? null : _options.FailClosedRetryAfter,
             StoreFailureOccurred = true,
-        };
+        });
+    }
+
+    private RateLimitDecision Record(RateLimitDecision decision)
+    {
+        if (decision.IsAllowed)
+        {
+            Metrics.RecordAllowed();
+        }
+        else
+        {
+            Metrics.RecordRejected();
+        }
+
+        return decision;
     }
 
     private static RateLimitDecision Decide(

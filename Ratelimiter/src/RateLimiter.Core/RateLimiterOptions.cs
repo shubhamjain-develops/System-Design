@@ -1,3 +1,5 @@
+using RateLimiter.Core.Resilience;
+
 namespace RateLimiter.Core;
 
 /// <summary>
@@ -35,4 +37,36 @@ public sealed record RateLimiterOptions
             _maxWriteAttempts = value;
         }
     }
+
+    /// <summary>
+    /// What to do when limiter state cannot be reached.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to <see cref="StoreFailurePolicy.FailOpen"/>, which is right for a public
+    /// gateway and wrong for anything metered, authenticating, or billed. Worth setting
+    /// deliberately rather than inheriting.
+    /// </remarks>
+    public StoreFailurePolicy OnStoreFailure { get; init; } = StoreFailurePolicy.FailOpen;
+
+    /// <summary>
+    /// Guards calls to the store, short-circuiting once it starts failing.
+    /// </summary>
+    /// <remarks>
+    /// Supplying one is optional but recommended. Without it, every request during a store
+    /// outage pays the full cost of discovering the store is down — which at any real volume
+    /// turns the limiter into the outage.
+    /// </remarks>
+    public CircuitBreaker? CircuitBreaker { get; init; }
+
+    /// <summary>
+    /// The retry delay advised when a request is refused because the store is unreachable and
+    /// the policy is <see cref="StoreFailurePolicy.FailClosed"/>.
+    /// </summary>
+    /// <remarks>
+    /// Not a computed value, because nothing has been computed: the caller is not waiting for a
+    /// permit to accrue but for the limiter to recover, and the engine has no idea when that
+    /// will be. A short fixed delay is the honest answer, and having one at all is what stops
+    /// every refused caller retrying instantly and turning a store outage into a stampede.
+    /// </remarks>
+    public TimeSpan FailClosedRetryAfter { get; init; } = TimeSpan.FromSeconds(1);
 }
