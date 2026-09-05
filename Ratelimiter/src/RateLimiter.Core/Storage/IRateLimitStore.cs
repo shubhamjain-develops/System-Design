@@ -44,9 +44,14 @@ public readonly record struct StoreEntry(LimiterState State, long Version);
 /// <strong>TTL is a parameter, not an option.</strong> Every write must state when its entry
 /// may be reclaimed, because per-key state with no expiry is a memory-exhaustion vector — one
 /// request per new key is all it takes. Making it a required argument means a backend author
-/// cannot forget it. Note that the TTL is a memory backstop and never the source of
-/// correctness: the window arithmetic lives in the stored timestamps, so an entry expiring
-/// early costs a caller nothing worse than a fresh allowance.
+/// cannot forget it.
+/// </para>
+/// <para>
+/// The TTL is not merely a memory hint, and it is worth being exact about why. Reclaiming an
+/// entry early resets the caller to "never seen", and for the bucket algorithms that means
+/// handing back a full bucket mid-drain — a bypass, not a rounding error. The store's job is
+/// to honour the TTL it is given; choosing a safe one is the algorithm's job, and each does so
+/// by outlasting the point at which its state has become equivalent to no state at all.
 /// </para>
 /// </remarks>
 public interface IRateLimitStore
