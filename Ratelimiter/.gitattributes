@@ -1,0 +1,16 @@
+# Normalise line endings on commit so the repository stores LF regardless of the OS a
+# contributor is on. Without this, every file authored on Windows lands as CRLF and every
+# later diff on another machine shows the whole file as changed, which buries real changes.
+* text=auto eol=lf
+
+# Windows-only tooling that genuinely requires CRLF.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary — never touch these.
+*.png binary
+*.jpg binary
+*.ico binary
+*.snk binary
+*.dll binary

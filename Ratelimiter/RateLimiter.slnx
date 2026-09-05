@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RateLimiter.Core/RateLimiter.Core.csproj" />
+    <Project Path="src/RateLimiter.Demo/RateLimiter.Demo.csproj" />
+    <Project Path="src/RateLimiter.Redis/RateLimiter.Redis.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/RateLimiter.Core.Tests/RateLimiter.Core.Tests.csproj" />
+  </Folder>
+</Solution>

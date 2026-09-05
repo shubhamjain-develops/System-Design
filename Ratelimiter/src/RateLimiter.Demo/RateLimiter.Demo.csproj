@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>RateLimiter.Demo</RootNamespace>
+    <AssemblyName>RateLimiter.Demo</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RateLimiter.Core\RateLimiter.Core.csproj" />
+    <ProjectReference Include="..\RateLimiter.Redis\RateLimiter.Redis.csproj" />
+  </ItemGroup>
+
+  <!--
+    The demo references both so it can show the same rules running against the
+    in-memory store and against the stubbed Redis store, including the fail-open
+    path when the store is made to fail. A limiter that silently stops limiting
+    is the failure mode worth being able to see.
+  -->
+  <ItemGroup>
+    <None Update="rules.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
