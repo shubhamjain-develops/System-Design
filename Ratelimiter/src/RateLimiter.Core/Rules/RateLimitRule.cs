@@ -62,6 +62,44 @@ public sealed record RateLimitRule
     public ImmutableArray<string> KeyBy { get; init; } = [RequestFields.ClientId];
 
     /// <summary>
+    /// Compares two rules by value.
+    /// </summary>
+    /// <param name="other">The rule to compare with.</param>
+    /// <returns><see langword="true"/> when both express the same rule.</returns>
+    /// <remarks>
+    /// Written out for the same reason as <see cref="RuleMatch.Equals(RuleMatch?)"/>: the
+    /// compiler's generated equality would compare <see cref="KeyBy"/> by reference, so a rule
+    /// loaded from JSON would never equal an identical rule built in code. Order matters for
+    /// <see cref="KeyBy"/> — unlike a match's accepted values — because it determines the layout
+    /// of the storage key, and two orderings produce two different keys.
+    /// </remarks>
+    public bool Equals(RateLimitRule? other) =>
+        other is not null
+        && (ReferenceEquals(this, other)
+            || (string.Equals(Name, other.Name, StringComparison.Ordinal)
+                && Priority == other.Priority
+                && Match == other.Match
+                && Policy == other.Policy
+                && KeyBy.SequenceEqual(other.KeyBy, StringComparer.OrdinalIgnoreCase)));
+
+    /// <inheritdoc />
+    public override int GetHashCode()
+    {
+        HashCode hash = new();
+        hash.Add(Name, StringComparer.Ordinal);
+        hash.Add(Priority);
+        hash.Add(Match);
+        hash.Add(Policy);
+
+        foreach (string field in KeyBy)
+        {
+            hash.Add(field, StringComparer.OrdinalIgnoreCase);
+        }
+
+        return hash.ToHashCode();
+    }
+
+    /// <summary>
     /// Renders the rule for diagnostics and demo output.
     /// </summary>
     /// <returns>A string such as <c>free-search [p10] where tier in (free) key(clientId) TokenBucket 5/00:00:10</c>.</returns>

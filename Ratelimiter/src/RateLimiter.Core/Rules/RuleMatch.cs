@@ -158,6 +158,85 @@ public sealed record RuleMatch
             Conditions.Select(c => $"{c.Key} in ({string.Join('|', c.Value)})"));
     }
 
+    /// <summary>
+    /// Compares two matches by their conditions.
+    /// </summary>
+    /// <param name="other">The match to compare with.</param>
+    /// <returns><see langword="true"/> when both express the same conditions.</returns>
+    /// <remarks>
+    /// Written out rather than left to the compiler. A record's generated equality compares
+    /// members with <see cref="object.Equals(object?)"/>, and an
+    /// <see cref="ImmutableDictionary{TKey, TValue}"/> compares by reference — so two matches
+    /// built from identical conditions would report themselves unequal. That would be a trap
+    /// rather than an inefficiency: reload logic that asks "did the rules actually change?"
+    /// would answer yes every time.
+    ///
+    /// Accepted values are compared as a set, because that is what they mean: a rule accepting
+    /// free or trial is the same rule as one accepting trial or free.
+    /// </remarks>
+    public bool Equals(RuleMatch? other)
+    {
+        if (other is null)
+        {
+            return false;
+        }
+
+        if (ReferenceEquals(this, other))
+        {
+            return true;
+        }
+
+        if (Conditions.Count != other.Conditions.Count)
+        {
+            return false;
+        }
+
+        foreach (KeyValuePair<string, ImmutableArray<string>> condition in Conditions)
+        {
+            if (!other.Conditions.TryGetValue(condition.Key, out ImmutableArray<string> otherValues))
+            {
+                return false;
+            }
+
+            if (condition.Value.Length != otherValues.Length)
+            {
+                return false;
+            }
+
+            foreach (string value in condition.Value)
+            {
+                if (!otherValues.Contains(value, StringComparer.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /// <inheritdoc />
+    public override int GetHashCode()
+    {
+        // Combined with XOR so the result does not depend on dictionary enumeration order,
+        // which is not guaranteed to match between two equal instances.
+        int hash = Conditions.Count;
+
+        foreach (KeyValuePair<string, ImmutableArray<string>> condition in Conditions)
+        {
+            int entry = StringComparer.OrdinalIgnoreCase.GetHashCode(condition.Key);
+
+            foreach (string value in condition.Value)
+            {
+                entry ^= StringComparer.OrdinalIgnoreCase.GetHashCode(value);
+            }
+
+            hash ^= entry;
+        }
+
+        return hash;
+    }
+
     private static bool Accepts(ImmutableArray<string> accepted, string actual)
     {
         foreach (string value in accepted)

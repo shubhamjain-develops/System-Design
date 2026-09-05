@@ -90,4 +90,50 @@ public sealed record LimiterState
     /// rather than trusted.
     /// </remarks>
     public ImmutableArray<long> Timestamps { get; init; } = ImmutableArray<long>.Empty;
+
+    /// <summary>
+    /// Compares two states by value.
+    /// </summary>
+    /// <param name="other">The state to compare with.</param>
+    /// <returns><see langword="true"/> when both hold the same accounting.</returns>
+    /// <remarks>
+    /// Written out because the compiler's generated equality would compare
+    /// <see cref="Timestamps"/> by reference, so two states holding identical timestamps would
+    /// report themselves different. Nothing currently depends on this — the in-memory store's
+    /// compare-and-swap deliberately compares entry references, not state values — but a public
+    /// record that advertises value semantics and does not have them is a trap for whoever
+    /// writes the next backend.
+    /// </remarks>
+    public bool Equals(LimiterState? other) =>
+        other is not null
+        && (ReferenceEquals(this, other)
+            || (WindowStartTicks == other.WindowStartTicks
+                && Count == other.Count
+                && PreviousCount == other.PreviousCount
+                && Tokens.Equals(other.Tokens)
+                && LastUpdatedTicks == other.LastUpdatedTicks
+                && Timestamps.AsSpan().SequenceEqual(other.Timestamps.AsSpan())));
+
+    /// <inheritdoc />
+    public override int GetHashCode()
+    {
+        HashCode hash = new();
+        hash.Add(WindowStartTicks);
+        hash.Add(Count);
+        hash.Add(PreviousCount);
+        hash.Add(Tokens);
+        hash.Add(LastUpdatedTicks);
+        hash.Add(Timestamps.Length);
+
+        // The full list can reach the policy limit in length, and a hash does not need every
+        // element to be useful. The ends plus the length distinguish the states that actually
+        // occur, since entries are appended in ascending time order.
+        if (!Timestamps.IsDefaultOrEmpty)
+        {
+            hash.Add(Timestamps[0]);
+            hash.Add(Timestamps[^1]);
+        }
+
+        return hash.ToHashCode();
+    }
 }
