@@ -9,6 +9,20 @@
   <PropertyGroup>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+
+    <!--
+      CA1707 forbids underscores in member names. It is suppressed here, and only here.
+
+      The rule protects a library's public API, where an underscore is genuinely unidiomatic
+      in .NET. A test method name is not API: it is a sentence printed in the failure output,
+      and "Empty_string_is_treated_as_absent" is readable there in a way that
+      EmptyStringIsTreatedAsAbsent is not. Snake case for test names is the prevailing
+      convention in .NET test suites for exactly that reason.
+
+      Scoped to this project rather than added to Directory.Build.props, so the production
+      assemblies stay under the rule.
+    -->
+    <NoWarn>$(NoWarn);CA1707</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
