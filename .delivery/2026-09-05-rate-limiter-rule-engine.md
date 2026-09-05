@@ -2,11 +2,11 @@
 slug: rate-limiter-rule-engine
 tier: 3
 confidence_pre: 78
-confidence_post: null
+confidence_post: 74
 repo: System-Design
 base: origin/main
 branch: feat/rate-limiter-rule-engine
-phase: branched
+phase: scored
 created: 2026-09-05
 ---
 
@@ -323,9 +323,30 @@ slices 1-6 plus 9 still constitute a working library.
 - **Risk:** ~90% coverage becomes a target that is gamed with shallow tests → **Mitigation:** the
   mutation check is the real gate; coverage is reported, not chased.
 - **Rollback:** `git revert` the branch, or delete `Ratelimiter/`. Nothing else in the repo
-  references it, no data is written outside the process, no external service is contacted. The
-  undo is itself safe — there is no partial state a revert could leave behind. To be *rehearsed*,
-  not merely asserted, at Phase D.
+  references it, no data is written outside the process, no external service is contacted.
+
+### Rollback rehearsal (Phase D) — executed 2026-09-06
+
+Performed for real, not described. On a scratch branch off the completed work:
+
+```
+git revert --no-commit origin/main..HEAD   # 76 files changed, 9496 deletions(-)
+git diff --name-only origin/main HEAD      # empty
+```
+
+**Result: the tree is byte-identical to `origin/main`.** Zero tracked `Ratelimiter/` files remain.
+The branch was then restored and `git status` is clean.
+
+**Security item 17 — does the rollback open a hole?** No, but the rehearsal surfaced something a
+written description would have missed. The revert also reverts `Ratelimiter/.gitignore`, so the
+build output left on disk becomes untracked *and unignored*: **200 files newly visible to git**.
+Inspected — `.dll`, `.pdb`, `.deps.json`, NuGet `.targets`, coverage XML and build stamps. No
+credentials, no personal data, so it is not a security finding. It is an operational one: a
+`git add -A` after a rollback would commit ~200 build artefacts.
+
+**Mitigation:** delete the directory (`rm -rf Ratelimiter/`) rather than relying on the revert
+alone, or revert the source commits while keeping the `.gitignore` commit. Recorded here so
+whoever performs the rollback knows before rather than after.
 
 ## 8. Confidence
 
@@ -364,12 +385,104 @@ Floor: tier 3. Full results recorded per `08-security.md` as each check runs.
 
 | # | Check | Result | Note |
 |---|---|---|---|
-| 1-12 | Tier 1 + 2 floor | pending | Run per slice (1-6) and once on the composed branch (7-12) |
-| 13-17 | Threat model | **done at design time** | Recorded in A6 above, before implementation, where it can still change the design |
+| 1 | Secret scan | pass | 9,496 added lines scanned. No private-key headers, AWS key ids, bearer tokens, `Authorization:` values or credential-bearing connection strings |
+| 2 | Personal-data guard | pass | No emails, phone numbers or identifiers in added lines. Test identities are placeholders (`acct-1`, `acct-greedy`); the only IP literal is `203.0.113.9`, from the RFC 5737 documentation range |
+| 3 | Permission diff | pass, reviewed | No `.claude/`, `.github/workflows/`, or root `.gitignore` changes. One new `Ratelimiter/.gitignore` — scoped to the new directory, covering only build/IDE output. The base branch had no `.gitignore`, so nothing was weakened |
+| 4 | Manifest / lockfile | pass | No lockfile, `Directory.Packages.props` or `nuget.config` |
+| 5 | Repo's own guards | n/a | This repo has no guard script. `verify.security` is `null` in the proposed config — recorded as an admitted gap, not a silent skip |
+| 6 | No hook bypass | pass | No `--no-verify`, no `--force`, no amend of a pushed commit |
+| 7 | Input-trust review | pass | Two untrusted inputs. (a) `RequestContext` values are caller-supplied and reach the limiter key: escaped, with a non-forgeable absent-tag, and empty strings treated as absent — see ADR 0005, with tests. (b) The rules JSON is operator-supplied: parsed without throwing, every failure a diagnostic, and a failed reload keeps the previous rules so a typo cannot remove all limits |
+| 8 | Dependency review | pass | Four packages, **test-project only**, all from the official `dotnet new xunit` template: xunit 2.9.3, xunit.runner.visualstudio 3.1.4, Microsoft.NET.Test.Sdk 17.14.1, coverlet.collector 6.0.4. The user chose xUnit explicitly at intake. `RateLimiter.Core` and `RateLimiter.Redis` ship **zero** package references — verified by grepping for reference elements |
+| 9 | Authorization touchpoints | n/a | The library performs no authentication or authorization. It consumes an already-established `ClientId`; it never establishes identity |
+| 10 | Logging and output review | pass | `RateLimitDecision.ToString` and the demo emit rule name, algorithm, remaining permits and the limiter key. The key contains a client id, which is an identifier the caller already supplied — no credential, token or secret is rendered anywhere. No exception message embeds caller data |
+| 11 | Egress review | pass | No outbound network call exists. The Redis adapter talks to an `IRedisConnection` interface with no implementation that opens a socket |
+| 12 | `/security-review` skill | **not run — unavailable** | No skill list was exposed to this session, so the built-in review could not be invoked. Reported rather than silently skipped; see the open-findings note below |
+| 13 | Threat model | done at design time | A6, written before any code. All four concerns mitigated in the design: enforcement bypass, key collision, unbounded memory, deliberate fail-open |
+| 14 | Identity and tenancy | n/a | No identity model; no cross-tenant isolation claim |
+| 15 | Data lifecycle | pass | Stores only counters, token balances and timestamps per key. No PII. TTL is a required parameter on every write and is a correctness bound, not a hint (ADR 0002). Deletion: TTL expiry, plus `RedisRateLimitStore.ResetAsync` for operator-initiated clearing |
+| 16 | Secret handling | n/a | No secret is introduced. The Redis adapter takes no connection string |
+| 17 | Rollback safety | pass, rehearsed | Executed in Phase D — see §7. Tree returns byte-identical to `origin/main`. One non-security operational finding recorded there |
+| 18 | Per-slice tier 1 re-check | pass | Hygiene re-run at each slice commit; the composed-branch run is the table above |
 
-**Open findings:** none at classification. A6 identifies four design-time concerns; all four are
-mitigated in the design rather than deferred, and each has a corresponding §5 criterion or test.
+**Open findings:** one, and it is a process gap rather than a defect.
+
+**Check 12 (`/security-review`) could not be run** — the built-in skill was not available to this
+session. Everything it would cover mechanically has been done by hand above, and the change
+introduces no auth, no secrets, no egress and no PII, so the residual risk is low. It is
+nonetheless an unrun check, and the honest place for it is here rather than an unremarked gap.
+**Recommend running `/security-review` on this branch before merge.**
+
+The four A6 concerns are all closed with tests: boundary bypass (`AlgorithmBoundaryTests`, plus a
+mutation check), key collision (`LimiterKey` escaping test), unbounded memory (store eviction test
+and required TTL), fail-open visibility (`ResilienceTests` and the demo's captured output).
 
 ## 10. Post-implementation
 
-_Appended after verification runs. Do not fill in before._
+**Post-implementation confidence: 74/100** (pre was 72 gated, delta +2)
+
+Per the tier 3 rule the number is the **minimum across slices, not the average**. The non-Redis
+work sits around 88; slice 7 sets the gate at 74, and reporting 88 would be averaging a chain and
+calling it a rope.
+
+| Slice | Pre | Post | What moved it |
+|---|---|---|---|
+| 1 Scaffold | 88 | 95 | Builds clean with warnings-as-errors and required XML docs |
+| 2 Primitives | 85 | 92 | 37 tests; validation proven unconstructable-if-invalid |
+| 3 Store | 76 | 88 | Mutation check decisive: breaking the CAS lost 2,190 of 3,200 updates |
+| 4 Algorithms | 80 | 90 | Boundary theory across all five; the off-by-one mutant failed 7 tests, all FixedWindow |
+| 5 Rule engine | 78 | 89 | 500 parallel requests admit exactly 50; key mutant failed exactly one targeted test |
+| 6 Config | 79 | 84 | Two real defects found *here* — held down deliberately; see below |
+| 7 Redis | **72** | **74** | Protocol and cross-store equivalence proven; the Lua is still never executed |
+| 8 Resilience | 77 | 88 | Mutation decisive; breaker state machine tested; outage observed in the demo |
+| 9 Demo | 82 | 88 | Executed twice, output captured and read — but crashed on first non-interactive run |
+| 10 ADRs | 90 | 93 | Written against what implementation actually taught, not against the plan |
+
+**What moved it up.** Every command in §6 has now been run rather than planned, which was the
+single largest drag at planning time — the SDK did not exist then. `dotnet build -c Release` is
+clean at 0 warnings; `dotnet test` passes 242; coverage is 94.1% line and 90.5% branch. Five
+mutation checks were performed and each one failed the tests it should have. The demo was executed
+and its output read, including the fail-open scenario. §5.10 was verified structurally rather than
+asserted. The rollback was rehearsed for real.
+
+**What held it down, and these are the interesting ones.**
+
+1. **Slice 7's limitation is unchanged and unchangeable within this scope.** The Redis Lua is never
+   executed by any test. `FakeRedisConnection` reproduces the script's semantics in C#, which
+   proves the adapter uses the script correctly and says nothing about whether the script is
+   correct. This is the one production-shaped code path with no executable verification, and it
+   caps the whole quest.
+2. **Two defects were found during implementation that the design did not anticipate**, both in
+   slice 6. `RuleParseResult.Succeeded` reported success for a document whose every rule failed to
+   parse, yielding an empty rule set — the precise "broken file silently removes all limits"
+   failure the design claimed to prevent, arriving by an unconsidered path. And three records
+   advertised value equality they did not have. Both were caught by tests and fixed, which is the
+   system working; but a design that had two unconsidered paths in one slice probably has more
+   elsewhere, and the score should say so.
+3. **A test targeting weakness was found by the slice 7 mutation check.** Sending a constant version
+   failed only `The_engine_behaves_identically_over_redis_and_over_memory` — not
+   `A_stale_version_is_refused`, which was written for exactly that defect and passed anyway. The
+   cross-store equivalence test is carrying more weight than the targeted one.
+4. **The demo crashed on its first scripted run** (`Console.KeyAvailable` throws when input is
+   redirected), meaning the non-interactive path had never been exercised before verification.
+   Fixed, and it is why §5.9 was verified by running the thing rather than by reading it.
+
+**What keeps this below 100:** the Redis Lua has never been executed. Everything else that could be
+verified in this environment has been.
+
+**What would raise it:** an integration test running `RedisScripts.CompareAndSwap` against a real
+Redis in a container, driving the same store-contract suite the in-memory implementation passes.
+That single addition would lift slice 7 and therefore the whole quest into the high eighties.
+
+**What a reviewer or future maintainer should watch:**
+
+- `RateLimiterMetrics.StoreFailures` — a sustained non-zero value means limits are not being
+  enforced while everything else looks healthy. This is the alerting signal.
+- `RateLimiterMetrics.WriteContentionExhausted` — rising means single-key contention has reached
+  the point where ADR 0009's rejected alternative becomes correct.
+- `JsonFileRuleSource.FailedReloadCount` — non-zero means the node is serving stale rules, which is
+  indistinguishable from serving current ones without this counter.
+- The unrun `/security-review` (see §9).
+
+**Gates.** Push threshold is 70; post-score is 74, so the push gate passes. There is no drop
+(72 → 74), so the halt rule does not apply. The rise of 2 is small deliberately: it is earned by
+slice 7's protocol and cross-store equivalence tests, and bounded by the Lua remaining unexecuted.
