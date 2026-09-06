@@ -1,0 +1,34 @@
+<Project>
+
+  <!--
+    Applies to every project under Ratelimiter/. One place to change the language
+    contract, so a new project cannot quietly opt out of the strictness the rest
+    of the solution is held to.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!--
+      Nullable reference types are on. This library's core type is a decision
+      object returned from a lookup that may find nothing, so "can this be null"
+      is a question the compiler should answer rather than the caller guessing.
+    -->
+    <Nullable>enable</Nullable>
+
+    <!--
+      Warnings are errors. The argument is specific rather than stylistic: this
+      library is a set of boundary conditions, and the compiler catches a whole
+      class of them (unreachable branches, unassigned state, comparisons that are
+      always true) for free. A warning nobody has to fix is a warning nobody reads.
+    -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+
+    <!-- Deterministic output so a rebuild on another machine is byte-comparable. -->
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+</Project>

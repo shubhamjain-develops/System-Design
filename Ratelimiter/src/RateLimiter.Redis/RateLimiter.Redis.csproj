@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>RateLimiter.Redis</RootNamespace>
+    <AssemblyName>RateLimiter.Redis</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!--
+    The dependency arrow points this way and never the other way. Core does not
+    reference Redis; Redis references Core and implements its store abstraction.
+
+    That single arrow is the proof that the abstraction holds. If the core ever
+    needed to know about Redis, the reference would have to be added here in
+    reverse and the build would fail on a circular reference — so the compiler,
+    not a code review, is what keeps the layering honest.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\RateLimiter.Core\RateLimiter.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    No StackExchange.Redis package. This adapter is stubbed by design: it talks to
+    a small IRedisConnection seam defined in this project, so the CAS protocol and
+    the Lua alternative are both expressed and testable without a live server or a
+    client library. Swapping the seam for the real client is a single class.
+  -->
+
+</Project>

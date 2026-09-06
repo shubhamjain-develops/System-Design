@@ -1,0 +1,43 @@
+{
+  // Rate-limit rules for the demo. Edit and restart to see the effect.
+  //
+  // Order is decided by "priority", not by position in this file: lower numbers are
+  // considered first and the FIRST match wins. The engine reports any rule made unreachable
+  // by an earlier, broader one — try moving catch-all to priority 1 to see it complain.
+  "rules": [
+    {
+      // Precision matters more than burst tolerance on a payments endpoint, so this one uses
+      // the exact algorithm and accepts its per-request storage cost.
+      "name": "payments-exact",
+      "priority": 10,
+      "match": { "endpoint": "/v1/payments" },
+      "keyBy": [ "clientId" ],
+      "policy": { "algorithm": "slidingWindowLog", "limit": 3, "windowSeconds": 5 }
+    },
+    {
+      // Free-tier search: a token bucket, so a page firing several parallel requests is not
+      // punished for it, but the sustained rate is still five per five seconds.
+      "name": "free-search",
+      "priority": 20,
+      "match": { "tier": "free", "endpoint": "/v1/search" },
+      "keyBy": [ "clientId" ],
+      "policy": { "algorithm": "tokenBucket", "limit": 5, "windowSeconds": 5, "burstCapacity": 8 }
+    },
+    {
+      // Same algorithm, four times the allowance. Tiering is a policy change, not a code path.
+      "name": "pro-search",
+      "priority": 30,
+      "match": { "tier": [ "pro", "enterprise" ], "endpoint": "/v1/search" },
+      "keyBy": [ "clientId" ],
+      "policy": { "algorithm": "tokenBucket", "limit": 20, "windowSeconds": 5, "burstCapacity": 30 }
+    },
+    {
+      // Everything else. Deliberately last: a catch-all placed earlier would shadow every rule
+      // above and the engine would say so at load time.
+      "name": "catch-all",
+      "priority": 1000,
+      "keyBy": [ "clientId" ],
+      "policy": { "algorithm": "fixedWindow", "limit": 10, "windowSeconds": 5 }
+    }
+  ]
+}

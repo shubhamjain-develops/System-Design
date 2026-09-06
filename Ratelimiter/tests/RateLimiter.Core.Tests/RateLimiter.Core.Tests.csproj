@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    TargetFramework, Nullable, ImplicitUsings and the warnings-as-errors setting all come from
+    Directory.Build.props. They are deliberately not repeated here: a per-project copy is a
+    place for the solution to drift, and the test project is the last one that should be held
+    to a weaker standard than the code it tests.
+  -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+
+    <!--
+      CA1707 forbids underscores in member names. It is suppressed here, and only here.
+
+      The rule protects a library's public API, where an underscore is genuinely unidiomatic
+      in .NET. A test method name is not API: it is a sentence printed in the failure output,
+      and "Empty_string_is_treated_as_absent" is readable there in a way that
+      EmptyStringIsTreatedAsAbsent is not. Snake case for test names is the prevailing
+      convention in .NET test suites for exactly that reason.
+
+      Scoped to this project rather than added to Directory.Build.props, so the production
+      assemblies stay under the rule.
+    -->
+    <NoWarn>$(NoWarn);CA1707</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\RateLimiter.Core\RateLimiter.Core.csproj" />
+    <ProjectReference Include="..\..\src\RateLimiter.Redis\RateLimiter.Redis.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

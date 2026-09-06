@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>RateLimiter.Core</RootNamespace>
+    <AssemblyName>RateLimiter.Core</AssemblyName>
+
+    <!--
+      XML docs are generated for the core library only. This is the assembly a
+      reader is meant to learn from, so an undocumented public member is a real
+      defect here and a CS1591 warning (an error, per Directory.Build.props) is
+      the mechanism that enforces it. Demo and test projects are exempt because
+      documenting a test tells nobody anything.
+    -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!--
+    Deliberately zero PackageReference entries. The core has no third-party
+    dependencies at all: no DI container, no JSON library, no Redis client.
+
+    That is a design constraint, not an accident. A rate limiter is the component
+    every request passes through, so anything it depends on is something every
+    request depends on. Keeping the core dependency-free also proves the store
+    abstraction is real, because the core cannot reach a backend even if it wanted
+    to. JSON parsing lives here only via System.Text.Json, which ships in the
+    framework rather than as a package.
+  -->
+
+</Project>
