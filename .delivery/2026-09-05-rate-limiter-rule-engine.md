@@ -6,7 +6,7 @@ confidence_post: 74
 repo: System-Design
 base: origin/main
 branch: feat/rate-limiter-rule-engine
-phase: scored
+phase: pushed
 created: 2026-09-05
 ---
 
@@ -348,6 +348,31 @@ credentials, no personal data, so it is not a security finding. It is an operati
 alone, or revert the source commits while keeping the `.gitignore` commit. Recorded here so
 whoever performs the rollback knows before rather than after.
 
+### Rollback rehearsal, second pass — after the fix, 2026-09-06
+
+**The finding above is now closed structurally rather than documented around.** The ignore rules
+moved to a repo-root `.gitignore` in a commit of its own (`528ffe8`), on the reasoning that build
+output is produced by whatever is in the tree at the time, so its ignore rules should not be owned
+by any one feature directory.
+
+The supported rollback is now two commands:
+
+```bash
+git revert --no-commit origin/main..HEAD
+git checkout 528ffe8 -- .gitignore
+git commit -m "revert rate limiter, keep build ignores"
+```
+
+The first form I wrote for this was wrong, and only running it exposed that.
+`git revert <range> ^<sha>` reads as "revert everything except this commit" and is not: `^sha`
+excludes that commit *and every ancestor of it*, which here is the entire range, so git refused
+with `error: empty commit set passed`. Restoring the file after the revert is the form that
+actually works — which is the argument for rehearsing rollbacks rather than describing them, made
+twice now in the same section.
+
+**Result:** tracked files reduce to `README.md` and `.gitignore`; the only difference from
+`origin/main` is that one intended file; and **untracked residue is 0, down from 200**.
+
 ## 8. Confidence
 
 **Pre-implementation: 78/100** for the quest as a whole; **72** as the gated number, taken as the
@@ -396,7 +421,7 @@ Floor: tier 3. Full results recorded per `08-security.md` as each check runs.
 | 9 | Authorization touchpoints | n/a | The library performs no authentication or authorization. It consumes an already-established `ClientId`; it never establishes identity |
 | 10 | Logging and output review | pass | `RateLimitDecision.ToString` and the demo emit rule name, algorithm, remaining permits and the limiter key. The key contains a client id, which is an identifier the caller already supplied — no credential, token or secret is rendered anywhere. No exception message embeds caller data |
 | 11 | Egress review | pass | No outbound network call exists. The Redis adapter talks to an `IRedisConnection` interface with no implementation that opens a socket |
-| 12 | `/security-review` skill | **not run — unavailable** | No skill list was exposed to this session, so the built-in review could not be invoked. Reported rather than silently skipped; see the open-findings note below |
+| 12 | Security review | **run by hand — 2 defects found and fixed** | The built-in `/security-review` skill is not installed in this environment (the available-skills list contains only `quest`), so the review was performed manually against the composed branch. Two real defects found, both fixed with regression tests and mutation-checked. Detail below |
 | 13 | Threat model | done at design time | A6, written before any code. All four concerns mitigated in the design: enforcement bypass, key collision, unbounded memory, deliberate fail-open |
 | 14 | Identity and tenancy | n/a | No identity model; no cross-tenant isolation claim |
 | 15 | Data lifecycle | pass | Stores only counters, token balances and timestamps per key. No PII. TTL is a required parameter on every write and is a correctness bound, not a hint (ADR 0002). Deletion: TTL expiry, plus `RedisRateLimitStore.ResetAsync` for operator-initiated clearing |
@@ -404,13 +429,55 @@ Floor: tier 3. Full results recorded per `08-security.md` as each check runs.
 | 17 | Rollback safety | pass, rehearsed | Executed in Phase D — see §7. Tree returns byte-identical to `origin/main`. One non-security operational finding recorded there |
 | 18 | Per-slice tier 1 re-check | pass | Hygiene re-run at each slice commit; the composed-branch run is the table above |
 
-**Open findings:** one, and it is a process gap rather than a defect.
+### Security review findings (check 12) — both resolved
 
-**Check 12 (`/security-review`) could not be run** — the built-in skill was not available to this
-session. Everything it would cover mechanically has been done by hand above, and the change
-introduces no auth, no secrets, no egress and no PII, so the residual risk is low. It is
-nonetheless an unrun check, and the honest place for it is here rather than an unremarked gap.
-**Recommend running `/security-review` on this branch before merge.**
+The mechanical floor asks "is there a secret in the diff". The review asked the different
+question — *what does an attacker-influenced value do to this code path* — and found two defects.
+Both are availability defects in a component whose failure mode is that it silently stops
+limiting, which is the worst place for them to hide.
+
+**Finding A — a rejection could be silently converted into an admission. Resolved.**
+
+`SlidingWindowLogAlgorithm` indexed `retained[0]` on its rejection path to compute when the next
+slot frees. That is safe only when the log is non-empty, and the intuition that it always is —
+"we only reject once the log is full" — is false: a request for more permits than the limit is
+rejected with an **empty** log. `permits` is supplied by the host, which may derive it from
+request content, so a batch of 6 against a limit of 5 reached it.
+
+The consequence was worse than a crash. `IndexOutOfRangeException` is not in the engine's
+excluded-exception list, so it was absorbed as a *store failure* and routed through the failure
+policy — and under the default `FailOpen` the request was then **admitted**. A rejection became
+an admission, reported as infrastructure trouble rather than as a bug. The same comparison was
+also widened to `long`, because two `int` operands with a caller-supplied `permits` can overflow
+to a negative sum that reads as "under the limit".
+
+*Fix:* guard the empty case; widen the comparison; a theory now asserts all five algorithms
+refuse extreme permit counts so a sixth cannot reintroduce the class.
+
+**Finding B — one cancelled request could disable rate limiting permanently. Resolved.**
+
+While half-open, `CircuitBreaker` hands out exactly one trial slot, released only by
+`RecordSuccess` or `RecordFailure`. The engine's cancellation path rethrew without calling
+either. The slot was then held forever, every subsequent `TryEnter` returned false, every request
+routed through the failure policy — and under `FailOpen` the limiter stopped limiting
+**permanently and silently**, from a single cancelled request.
+
+*Fix:* `CircuitBreaker.AbandonTrial` plus a `finally` in the engine. Abandoning is deliberately
+neither success nor failure, because a cancellation is not evidence about the store's health in
+either direction.
+
+Both fixes were mutation-checked: reintroducing each defect failed exactly the four tests written
+for them and no others.
+
+**Open findings:** none.
+
+**A scoring inconsistency worth recording.** The previous revision listed check 12 as an open
+finding while still reporting 74. `08-security.md` says an unresolved security finding caps
+confidence at 60, so that number was not consistent with its own record — the score should have
+been capped, or the finding explicitly accepted by the user with a reason. It was neither. Doing
+the review closes the finding and makes 74 legitimate rather than merely restated, but the
+earlier inconsistency is the kind of thing that quietly erodes a scoring system and is better
+written down than tidied away.
 
 The four A6 concerns are all closed with tests: boundary bypass (`AlgorithmBoundaryTests`, plus a
 mutation check), key collision (`LimiterKey` escaping test), unbounded memory (store eviction test
@@ -486,3 +553,34 @@ That single addition would lift slice 7 and therefore the whole quest into the h
 **Gates.** Push threshold is 70; post-score is 74, so the push gate passes. There is no drop
 (72 → 74), so the halt rule does not apply. The rise of 2 is small deliberately: it is earned by
 slice 7's protocol and cross-store equivalence tests, and bounded by the Lua remaining unexecuted.
+
+---
+
+### Revision, 2026-09-06 — after the manual security review
+
+The two open items from the first pass were closed by doing the work rather than by restating
+them. **The gated score remains 74**, and it is worth being precise about why it did not move in
+either direction.
+
+**It did not go up**, even though the open finding is now closed and two real defects are fixed
+with regression tests, because the number is gated by slice 7 and nothing in this pass touched
+slice 7's limitation. The Redis Lua is still never executed. A score that rose because unrelated
+work went well would be measuring effort rather than risk.
+
+**It did not go down**, even though the review found two exploitable defects that had been sitting
+under a 74, because they were found by this project's own process, fixed, mutation-checked, and
+fenced with regression tests. That is the system working. Two slices are marked down individually
+to record that they shipped defects:
+
+| Slice | Was | Now | Why |
+|---|---|---|---|
+| 4 Algorithms | 90 | 87 | Shipped Finding A. Boundary coverage was strong on counts and had no case at all for permit values above the limit |
+| 8 Resilience | 88 | 85 | Shipped Finding B. Breaker state transitions were tested; the paths that *exit without a transition* were not |
+
+Both were the same shape of gap, and it is the useful lesson from this pass: the tests covered
+the states and the transitions, and missed the exits. A test suite organised around "what states
+exist" will keep finding this class late.
+
+**What is still unknown, unchanged:** the Redis Lua has never been executed. That remains the one
+production-shaped path with no executable verification, and it is what a container-based
+integration test would close.
