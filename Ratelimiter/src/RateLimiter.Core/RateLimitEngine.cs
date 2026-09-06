@@ -107,6 +107,14 @@ public sealed class RateLimitEngine
             return FailureDecision(rule, key);
         }
 
+        // Once entered, the breaker is owed an outcome. While half-open it hands out exactly one
+        // trial slot, and a path that left without reporting success or failure would hold that
+        // slot forever — every later request then short-circuits, which under the default
+        // fail-open policy means the limiter stops limiting permanently and silently. The finally
+        // below returns the slot even on a cancellation or an exception this method declines to
+        // absorb.
+        bool outcomeRecorded = false;
+
         try
         {
             for (int attempt = 0; attempt < _options.MaxWriteAttempts; attempt++)
@@ -123,6 +131,7 @@ public sealed class RateLimitEngine
                     // Nothing to write, so nothing to race over. This is the rejection path for
                     // every algorithm, which is what keeps a limiter cheap while under attack.
                     breaker?.RecordSuccess();
+                    outcomeRecorded = true;
                     return Record(Decide(rule, key, outcome, storeFailure: false));
                 }
 
@@ -133,17 +142,32 @@ public sealed class RateLimitEngine
                 if (written)
                 {
                     breaker?.RecordSuccess();
+                    outcomeRecorded = true;
                     return Record(Decide(rule, key, outcome, storeFailure: false));
                 }
 
                 // Lost the race. The algorithm is a pure function, so there is nothing to undo:
                 // re-read and recompute against whatever the winner wrote.
             }
+
+            // Every write attempt lost its race. The engine cannot say what this caller has
+            // consumed, which is the same position an unreachable store leaves it in, so it is
+            // routed through the same policy. It is counted separately because the remedy is
+            // different: contention calls for server-side evaluation, not for fixing a store.
+            Metrics.RecordWriteContentionExhausted();
+
+            // Contention is evidence the store is alive and busy, not that it is failing, so this
+            // deliberately does not count toward the breaker.
+            breaker?.RecordSuccess();
+            outcomeRecorded = true;
+
+            return FailureDecision(rule, key);
         }
         catch (OperationCanceledException)
         {
-            // The caller gave up, not the store. Cancellation is not evidence of ill health and
-            // must not count toward tripping the breaker.
+            // The caller gave up, not the store. Cancellation is not evidence of ill health in
+            // either direction, so it must neither trip the breaker nor count as a recovery —
+            // but the trial slot still has to go back, which the finally does.
             throw;
         }
         catch (Exception ex) when (ex is not (ArgumentException or KeyNotFoundException))
@@ -152,20 +176,16 @@ public sealed class RateLimitEngine
             // algorithm, a bad argument — are deliberately excluded: those are bugs, and
             // silently failing open on a bug would hide it behind a limiter that appears to work.
             breaker?.RecordFailure();
+            outcomeRecorded = true;
             return FailureDecision(rule, key);
         }
-
-        // Every write attempt lost its race. The engine cannot say what this caller has
-        // consumed, which is the same position an unreachable store leaves it in, so it is
-        // routed through the same policy. It is counted separately because the remedy is
-        // different: contention calls for server-side evaluation, not for fixing a store.
-        Metrics.RecordWriteContentionExhausted();
-
-        // Contention is evidence the store is alive and busy, not that it is failing, so this
-        // deliberately does not count toward the breaker.
-        breaker?.RecordSuccess();
-
-        return FailureDecision(rule, key);
+        finally
+        {
+            if (!outcomeRecorded)
+            {
+                breaker?.AbandonTrial();
+            }
+        }
     }
 
     /// <summary>

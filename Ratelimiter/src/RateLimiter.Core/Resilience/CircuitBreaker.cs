@@ -147,6 +147,31 @@ public sealed class CircuitBreaker
     }
 
     /// <summary>
+    /// Releases a trial taken by <see cref="TryEnter"/> without reporting an outcome.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// For paths that enter and then neither succeed nor fail — a cancelled request, or an
+    /// exception the caller deliberately declines to treat as a store failure. These carry no
+    /// evidence about the dependency's health in either direction, so they must not count as
+    /// success or failure, but they must still hand the trial slot back.
+    /// </para>
+    /// <para>
+    /// Without this, half-open is a trap. The single trial slot stays held, every subsequent
+    /// <see cref="TryEnter"/> returns false, and every request routes through the failure policy
+    /// — which under the default fail-open means the limiter stops limiting permanently and
+    /// silently, triggered by one cancelled request.
+    /// </para>
+    /// </remarks>
+    public void AbandonTrial()
+    {
+        lock (_gate)
+        {
+            _trialInFlight = false;
+        }
+    }
+
+    /// <summary>
     /// Reports that an attempted call failed.
     /// </summary>
     public void RecordFailure()

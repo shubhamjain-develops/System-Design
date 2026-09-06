@@ -47,14 +47,35 @@ public sealed class SlidingWindowLogAlgorithm : IRateLimitAlgorithm
         // making the entry meaningfully more expensive to keep.
         TimeSpan ttl = policy.Window * 2;
 
-        if (retained.Length + permits > policy.Limit)
+        // Widened to long deliberately. Both operands are int, and permits is supplied by the
+        // host — which may derive it from request content, making it attacker-influenced — so an
+        // int sum here can overflow to a negative value that reads as "under the limit".
+        if ((long)retained.Length + permits > policy.Limit)
         {
-            // The oldest retained request is the one whose expiry frees the next slot. Being
-            // exact here is cheap for this algorithm and lets a well-behaved client retry once
-            // rather than poll.
-            long oldest = retained[0];
-            long admissibleAt = oldest + policy.Window.Ticks;
-            long waitTicks = Math.Max(admissibleAt - now.UtcTicks, TimeSpan.TicksPerMillisecond);
+            long waitTicks;
+
+            if (retained.IsEmpty)
+            {
+                // Nothing is stored, so nothing can age out to make room: the request is asking
+                // for more permits than the policy grants in an entire window, and there is no
+                // instant at which it becomes admissible.
+                //
+                // This branch is why the rejection path cannot simply index retained[0]. That it
+                // needs a guard at all is not obvious — the intuition is "we only reject when the
+                // log is full" — but a request for more permits than the limit is refused with an
+                // EMPTY log, and indexing it threw. Through the engine that exception was
+                // absorbed as a store failure and the request was then FAILED OPEN: a rejection
+                // silently converted into an admission, reported as infrastructure trouble.
+                waitTicks = policy.Window.Ticks;
+            }
+            else
+            {
+                // The oldest retained request is the one whose expiry frees the next slot. Being
+                // exact here is cheap for this algorithm and lets a well-behaved client retry
+                // once rather than poll.
+                long admissibleAt = retained[0] + policy.Window.Ticks;
+                waitTicks = Math.Max(admissibleAt - now.UtcTicks, TimeSpan.TicksPerMillisecond);
+            }
 
             return new AlgorithmOutcome(
                 IsAllowed: false,
