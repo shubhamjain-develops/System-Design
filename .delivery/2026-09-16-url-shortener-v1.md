@@ -6,7 +6,7 @@ confidence_post: 88
 repo: System-Design
 base: origin/main
 branch: feat/url-shortener-v1
-phase: scored
+phase: pushed
 created: 2026-09-16
 ---
 
