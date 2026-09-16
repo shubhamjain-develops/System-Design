@@ -2,11 +2,11 @@
 slug: url-shortener-v1
 tier: 2
 confidence_pre: 78
-confidence_post: null
+confidence_post: 88
 repo: System-Design
 base: origin/main
 branch: feat/url-shortener-v1
-phase: branched
+phase: scored
 created: 2026-09-16
 ---
 
@@ -114,7 +114,28 @@ Rejected:
 
 ## 6. How it is verified
 
-_Filled in during step 6, with real command output._
+| # | Verifies | Command or manual step | Expected | Observed |
+|---|---|---|---|---|
+| 1 | §5.1, §5.4 | `npm test` (`node --test`) — `POST /urls then GET the code redirects to the long URL` | 201, then 302 with `Location` = original URL | pass |
+| 2 | §5.2 | `npm test` — `POST /urls with a custom alias is retrievable at that alias` | code equals the alias, 302 on GET | pass |
+| 2 | §5.2 | `npm test` — `a taken custom alias responds 409` | second create with same alias → 409 | pass |
+| 3 | §5.3 | `npm test` — `an invalid longUrl responds 400` | 400 for `"not-a-url"` | pass |
+| 5 | §5.5 | `npm test` — `GET of an unknown code responds 404` | 404 | pass |
+| 6 | §5.6 | `npm test` — `GET of an expired code responds 410` | 302→ wait past expiry → 410 | pass |
+| all | §5.1-6 (store level) | `npm test` — 8 `store.test.js` unit tests | all pass, including expiry, alias conflict, reserved alias, invalid URL/expiry | pass |
+| — | mutation check | full-file removal: `mv src/store.js src/store.js.bak && node --test test/store.test.js` | tests fail with `MODULE_NOT_FOUND` | confirmed fails |
+| — | mutation check | targeted mutation: disabled the expiry `if` in `resolve()`, reran suite | exactly the expiry test fails, all 7 others still pass | confirmed — `'ok' !== 'expired'`, only that test failed |
+| §5.1, §5.2, §5.3, §5.5, §5.6 | real path, not just tests | live server on `PORT=3987`, exercised via `curl`: create → 201, `GET` code → 302 `Location: https://example.com/very/long/path`, custom alias → 201/302, duplicate alias → 409, unknown code → 404, invalid `longUrl` → 400 | matches §5 | all observed exactly as expected (see transcript in this session) |
+| §5.6 | real path, expiry | live server: created with `expiresInSeconds: 1`, waited 2s, `curl` the code | `410 Gone`, `{"error":"short url expired"}` | confirmed |
+| §5.7 | manual reasoning | store is a plain in-process `Map` with no file/DB backing; killing and restarting the process clears it by construction — not independently re-verified by starting a second process, since this follows directly from there being no persistence code at all | data lost on restart | not re-run as a separate step; inherent to the implementation |
+
+Full suite: `npm test` → **14/14 pass** (6 HTTP-level integration tests in `server.test.js`, 8 unit
+tests in `store.test.js`).
+
+**Platform note:** `node --test test/` (explicit directory arg) failed with `MODULE_NOT_FOUND` on
+this Windows/Node 24 combination — a path-resolution quirk in this Node build, not a code defect.
+Switched `package.json`'s `test` script to bare `node --test` (default discovery), which works
+correctly and is what `npm test` now runs.
 
 ## 7. Risks and rollback
 
@@ -159,21 +180,56 @@ Floor: tier 2. Results per `08-security.md`.
 
 | # | Check | Result | Note |
 |---|---|---|---|
-| 1 | Secret scan | pending | run on clean tree before implementation, and again on final diff |
-| 2 | Personal-data guard | pending | |
-| 3 | Permission diff | pending | |
-| 4 | No manifest/lockfile movement | n/a expected | zero dependencies — `package.json` will be created but with no `dependencies` block and no lockfile |
+| 1 | Secret scan | pass | run on clean tree pre-implementation and on final diff (`git diff --cached`); no key headers, tokens, or embedded credentials in added lines |
+| 2 | Personal-data guard | pass | `git status --porcelain` shows only the 6 new files under `URLShortner/`; no names/emails/PII introduced |
+| 3 | Permission diff | pass | `git diff --cached --name-only` touches only `URLShortner/{README.md,package.json,src/*,test/*}` — no `.claude/`, `.github/workflows/`, `.gitignore`, or lifecycle-script paths |
+| 4 | No manifest/lockfile movement | pass | `package.json` has no `dependencies` block; no lockfile created |
 | 5 | Repo's own guards | n/a | `verify.security` not configured for this repo (no `.claude/delivery.json`, no CI) — recorded as a gap, not silently skipped |
-| 6 | No hook bypass | pending | |
-| 7 | Input-trust review | pending | `longUrl` (arbitrary string from an untrusted HTTP caller) and `customAlias`/path code (untrusted path segment) are the two input paths |
+| 6 | No hook bypass | pass | no `--no-verify`, `--force`, or disabled check used at any point |
+| 7 | Input-trust review | pass (see note) | `longUrl`: untrusted string from an HTTP POST body, validated via `new URL()` + http/https scheme check before storage, rejected `400` otherwise. `customAlias`: untrusted path-shaped string, validated against `^[A-Za-z0-9_-]{3,32}$` plus a reserved-word check, rejected `400`/`409` otherwise. `expiresInSeconds`: validated as a finite positive number. Malformed JSON body → `400`. Body capped at 10KB. |
 | 8 | Dependency review | n/a | no dependency added (zero-dependency approach chosen specifically to avoid this) |
 | 9 | Authorization touchpoints | n/a | no auth in this service |
-| 10 | Logging/output review | pending | |
-| 11 | Egress review | n/a | no outbound network calls |
-| 12 | `/security-review` | pending | run on branch diff before push gate |
+| 10 | Logging/output review | pass | only the catch-all 500 path logs (`console.error`, server-side only); it logs the caught `Error` object, not any secret or PII — this service handles no credentials |
+| 11 | Egress review | n/a | no outbound network calls anywhere in the service |
+| 12 | `/security-review` | pass, manual | the skill's auto-gathered git context resolved against the wrong working directory and returned empty; reviewed the diff manually against the same category checklist instead — see findings below |
 
-**Open findings:** none yet — checks not yet run, recorded above as `pending`.
+**Manual `/security-review` findings (check 12):**
+- Open redirect via `GET /:code` → 302 to the stored `longUrl`: this is the service's entire
+  designed function, not a defect introduced by the diff — not reportable.
+- SSRF: no outbound requests are ever made server-side; the server only redirects the client's
+  browser. No SSRF surface.
+- Prototype pollution via JSON body: parsed body is read through three explicit property
+  accesses, never merged/spread onto a shared object. No pollution path.
+- Path traversal via `:code`: used only as a `Map` key, never touches the filesystem; multi-segment
+  paths are rejected (404) before reaching the handler.
+- Weak randomness (`Math.random`) for code generation: codes are public lookup keys for a
+  redirect, not authorization/session tokens — guessing one exposes nothing the creator didn't
+  already make public. No concrete exploit path.
+
+No HIGH or MEDIUM confidence findings identified.
+
+**Open findings:** none.
 
 ## 10. Post-implementation
 
-_Appended after verification runs. Do not fill in before._
+**Post-implementation confidence: 88/100** (pre was 78, delta +10)
+
+**What moved it:** the pre-score's named unknown — whether skipping the diagram's separate `GET
+/urls/{shorturl}` JSON route was actually acceptable — is resolved: it was flagged explicitly
+before implementation, and the user's "go ahead" came after seeing that exact tradeoff spelled
+out, which is stronger evidence than the earlier "did not object." All 14 tests pass, the mutation
+check (both a full-file removal and a single targeted logic mutation) proved the test suite can
+actually fail, and every behavior in §5 was additionally exercised against a real running server
+via `curl`, not just the test harness. The blast-radius review also caught and fixed a real
+near-miss during implementation: the new files were initially written at the worktree root instead
+of inside `URLShortner/`, which would have collided with (and, via a blocked `Write`, nearly
+overwrote) the repo's own root `README.md` — corrected before any commit, so it never touched
+history, but it's the concrete reason blast radius is verified rather than assumed.
+
+**What is still unknown:** the `/security-review` skill's automated git-context gathering resolved
+against the wrong working directory in this session and returned empty, so check 12 rests on a
+manual category-by-category read of the diff rather than the skill's own tool-assisted scan — a
+rerun with correct context would be stronger evidence than what's recorded here. Separately, the
+collision-retry logic in `store.js` (re-roll on a colliding random code) is reasoned to be race-free
+from reading Node's single-threaded synchronous execution model, but was not exercised under actual
+concurrent load.
