@@ -1,0 +1,14 @@
+{
+  "name": "url-shortener-v1",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minimal in-memory URL shortener (v1), built from the design in url shortner.excalidraw",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
